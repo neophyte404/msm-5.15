@@ -86,7 +86,6 @@ struct qcom_cpufreq_data {
 
 	unsigned long dcvsh_freq_limit;
 	struct device_attribute freq_limit_attr;
-
 #if DISABLE_FREQ_LM
 	unsigned long disable_dcvsh_freq_limit;
 	struct device_attribute disable_limit_attr;

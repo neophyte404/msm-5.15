@@ -467,7 +467,6 @@ static void msm_restart_prepare(const char *cmd)
 			reason = PON_RESTART_REASON_NORMAL;
 			__raw_writel(0x77665501, restart_reason);
 		}
-
 	} else {
 		reason = PON_RESTART_REASON_NORMAL;
 		__raw_writel(0x77665501, restart_reason);
