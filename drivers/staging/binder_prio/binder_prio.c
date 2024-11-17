@@ -10,7 +10,7 @@
 
 static const char *task_name[] = {
 	"com.miui.home",
-	"surfaceflinger",
+	//"surfaceflinger",
 	"cameraserver",
 	"ndroid.systemui",  // com.android.systemui
 	"droid.launcher3",	// com.android.launcher3
