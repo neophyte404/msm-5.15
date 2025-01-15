@@ -149,8 +149,7 @@ static FORCE_INLINE int LZ4HC_InsertAndFindBestMatch(
 					match + MINMATCH, vLimit) + MINMATCH;
 				if ((ip + mlt == vLimit)
 					&& (vLimit < iLimit))
-					mlt += LZ4_count(ip + mlt,
-						base + dictLimit,
+					mlt += LZ4_count(ip + mlt, base + dictLimit,
 						iLimit);
 				if (mlt > ml) {
 					/* virtual matchpos */
