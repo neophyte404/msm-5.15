@@ -10,7 +10,6 @@
 
 static const char *task_name[] = {
     "com.miui.home",
-    //"surfaceflinger",
     "cameraserver",
     "ndroid.systemui",  // com.android.systemui
 	"droid.launcher3",	// com.android.launcher3
@@ -78,7 +77,7 @@ static void extend_surfacefinger_binder_set_priority_handler(
         for (i = 0; i < sizeof(task_name) / sizeof(task_name[0]); i++) {
             if (strcmp(task->group_leader->comm, task_name[i]) == 0) {
                 policy = SCHED_RR;
-                params.sched_priority = 30;
+                params.sched_priority = 15;
 
                 if (rt_policy(policy)) {
                     sched_setscheduler_nocheck(task, policy | SCHED_RESET_ON_FORK,
@@ -91,7 +90,7 @@ static void extend_surfacefinger_binder_set_priority_handler(
 
     if (set_binder_rt_task(t)) {
         policy = SCHED_RR;
-        params.sched_priority = 30;
+        params.sched_priority = 15;
 
         if (rt_policy(policy) && t->from && t->from->task) {
              sched_setscheduler_nocheck(t->from->task, policy | SCHED_RESET_ON_FORK, &params);
