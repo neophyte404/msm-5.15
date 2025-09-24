@@ -87,7 +87,8 @@ static int msm_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
 
 static struct devfreq_dev_profile msm_devfreq_profile = {
 	.timer = DEVFREQ_TIMER_DELAYED,
-	.polling_ms = 50,
+	// Increase polling interval to make scaling less aggressive
+	.polling_ms = 200,
 	.target = msm_devfreq_target,
 	.get_dev_status = msm_devfreq_get_dev_status,
 	.get_cur_freq = msm_devfreq_get_cur_freq,
@@ -97,29 +98,30 @@ void msm_devfreq_init(struct msm_gpu *gpu)
 {
 	/* We need target support to do devfreq */
 	if (!gpu->funcs->gpu_busy)
-		return;
+	// Relax frequency scaling: limit max downscale, avoid rapid drops
+	unsigned long old_freq = get_freq(gpu);
+	if (gpu->devfreq.idle_freq) {
+		gpu->devfreq.idle_freq = *freq;
+		dev_pm_opp_put(opp);
+		return 0;
+	}
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
 
-	msm_devfreq_profile.initial_freq = gpu->fast_rate;
-
-	/*
-	 * Don't set the freq_table or max_state and let devfreq build the table
-	 * from OPP
-	 * After a deferred probe, these may have be left to non-zero values,
-	 * so set them back to zero before creating the devfreq device
-	 */
-	msm_devfreq_profile.freq_table = NULL;
-	msm_devfreq_profile.max_state = 0;
-
-	gpu->devfreq.devfreq = devm_devfreq_add_device(&gpu->pdev->dev,
-			&msm_devfreq_profile, DEVFREQ_GOV_SIMPLE_ONDEMAND,
-			NULL);
-
-	if (IS_ERR(gpu->devfreq.devfreq)) {
-		DRM_DEV_ERROR(&gpu->pdev->dev, "Couldn't initialize GPU devfreq\n");
-		gpu->devfreq.devfreq = NULL;
-		return;
+	// Only allow frequency to drop by max 1 step per poll
+	if (*freq < old_freq) {
+		if (old_freq - *freq > old_freq / 4) // max 25% drop per poll
+			*freq = old_freq - old_freq / 4;
 	}
 
+	trace_msm_gpu_freq_change(dev_pm_opp_get_freq(opp));
+	if (gpu->funcs->gpu_set_freq)
+		gpu->funcs->gpu_set_freq(gpu, opp);
+	else
+		clk_set_rate(gpu->core_clk, *freq);
+
+	dev_pm_opp_put(opp);
+	return 0;
 	devfreq_suspend_device(gpu->devfreq.devfreq);
 
 	gpu->cooling = of_devfreq_cooling_register(gpu->pdev->dev.of_node,
