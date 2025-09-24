@@ -124,9 +124,6 @@ static int cpuidle_cooling_set_cur_state(struct thermal_cooling_device *cdev,
 					 unsigned long state)
 {
 	struct cpuidle_cooling_device *idle_cdev = cdev->devdata;
-	struct idle_inject_device *ii_dev = idle_cdev->ii_dev;
-	unsigned long current_state = idle_cdev->state;
-	unsigned int runtime_us, idle_duration_us;
 
 	// Bypass CPU idle injection to remove frequency limitation
 	idle_cdev->state = 0; // Always set to 0 (no mitigation)
