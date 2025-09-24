@@ -50,14 +50,6 @@ struct cpuidle_cooling_device {
  *
  * Return: An unsigned int for a usec based runtime duration.
  */
-static unsigned int cpuidle_cooling_runtime(unsigned int idle_duration_us,
-					    unsigned long state)
-{
-	if (!state)
-		return 0;
-
-	return ((idle_duration_us * 100) / state) - idle_duration_us;
-}
 
 /**
  * cpuidle_cooling_get_max_state - Get the maximum state
