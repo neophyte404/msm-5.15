@@ -128,19 +128,10 @@ static int cpuidle_cooling_set_cur_state(struct thermal_cooling_device *cdev,
 	unsigned long current_state = idle_cdev->state;
 	unsigned int runtime_us, idle_duration_us;
 
-	idle_cdev->state = state;
+	// Bypass CPU idle injection to remove frequency limitation
+	idle_cdev->state = 0; // Always set to 0 (no mitigation)
 
-	idle_inject_get_duration(ii_dev, &runtime_us, &idle_duration_us);
-
-	runtime_us = cpuidle_cooling_runtime(idle_duration_us, state);
-
-	idle_inject_set_duration(ii_dev, runtime_us, idle_duration_us);
-
-	if (current_state == 0 && state > 0) {
-		idle_inject_start(ii_dev);
-	} else if (current_state > 0 && !state)  {
-		idle_inject_stop(ii_dev);
-	}
+	// Do not start or stop idle injection, leave CPU at max performance
 
 	return 0;
 }

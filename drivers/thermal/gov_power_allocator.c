@@ -141,31 +141,21 @@ static void estimate_pid_constants(struct thermal_zone_device *tz,
 	if (ret)
 		switch_on_temp = 0;
 
-	temperature_threshold = control_temp - switch_on_temp;
-	/*
-	 * estimate_pid_constants() tries to find appropriate default
-	 * values for thermal zones that don't provide them. If a
-	 * system integrator has configured a thermal zone with two
-	 * passive trip points at the same temperature, that person
-	 * hasn't put any effort to set up the thermal zone properly
-	 * so just give up.
-	 */
+	// Make PID less aggressive: increase threshold, reduce gain
+	temperature_threshold = (control_temp - switch_on_temp) * 2; // double threshold
 	if (!temperature_threshold)
-		return;
+		temperature_threshold = 10000; // fallback to high value
 
-	tz->tzp->k_po = int_to_frac(sustainable_power) /
-		temperature_threshold;
+	tz->tzp->k_po = int_to_frac(sustainable_power) / (temperature_threshold * 2); // reduce proportional gain
+	tz->tzp->k_pu = int_to_frac(sustainable_power) / temperature_threshold;
 
-	tz->tzp->k_pu = int_to_frac(2 * sustainable_power) /
-		temperature_threshold;
-
-	k_i = tz->tzp->k_pu / 10;
+	k_i = tz->tzp->k_pu / 20; // reduce integral gain
 	tz->tzp->k_i = k_i > 0 ? k_i : 1;
 
-	/*
-	 * The default for k_d and integral_cutoff is 0, so we can
-	 * leave them as they are.
-	 */
+	// Derivative gain even lower
+	tz->tzp->k_d = 1;
+
+	// The default for integral_cutoff is 0, so we can leave it as is.
 }
 
 /**
