@@ -16,7 +16,6 @@ static const char *task_name[] = {
 	"s.nexuslauncher",	// com.google.android.apps.nexuslauncher
 	".globallauncher",	// com.mi.android.globallauncher
 	"coilsw.launcher",	// com.teslacoilsw.launcher
-	"android.webview",	// com.google.android.webview, com.android.webview
 	"putmethod.latin",	// com.google.android.inputmethod.latin, com.android.inputmethod.latin
 	"chtype.swiftkey"	// com.touchtype.swiftkey
 };
