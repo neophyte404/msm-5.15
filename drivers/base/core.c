@@ -2458,22 +2458,47 @@ static ssize_t online_show(struct device *dev, struct device_attribute *attr,
 }
 
 static ssize_t online_store(struct device *dev, struct device_attribute *attr,
-			    const char *buf, size_t count)
+                const char *buf, size_t count)
 {
-	bool val;
-	int ret;
+    bool val;
+    int ret;
+    struct device *target_dev = dev;
+    int requested_cpuid = dev->id;
+    int target_cpuid = requested_cpuid;
 
-	ret = strtobool(buf, &val);
-	if (ret < 0)
-		return ret;
+    ret = strtobool(buf, &val);
+    if (ret < 0)
+        return ret;
 
-	ret = lock_device_hotplug_sysfs();
-	if (ret)
-		return ret;
+	/* 
+	 * mi_thermald is misconfigured to disable efficient
+	 * cores when battery falls bellow 5%. Redirect to 
+	 * disable performance cores instead as that makes
+	 * more sense.
+	*/
+    if (!strcmp(current->comm, "mi_thermald")) {
+        if (requested_cpuid == 2) {
+            target_cpuid = 4;
+        } else if (requested_cpuid == 3) {
+            target_cpuid = 5;
+        }
+    }
 
-	ret = val ? device_online(dev) : device_offline(dev);
-	unlock_device_hotplug();
-	return ret < 0 ? ret : count;
+    if (requested_cpuid != target_cpuid) {
+        target_dev = get_cpu_device(target_cpuid);
+        
+        if (!target_dev) {
+            return -ENODEV; 
+        }
+    }
+
+    ret = lock_device_hotplug_sysfs();
+    if (ret)
+        return ret;
+
+    ret = val ? device_online(target_dev) : device_offline(target_dev);
+    unlock_device_hotplug();
+    return ret < 0 ? ret : count;
 }
 static DEVICE_ATTR_RW(online);
 
