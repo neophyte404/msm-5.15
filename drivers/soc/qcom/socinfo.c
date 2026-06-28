@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2009-2017, 2021 The Linux Foundation. All rights reserved.
  * Copyright (c) 2017-2019, Linaro Ltd.
- * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/debugfs.h>
@@ -110,6 +110,10 @@ static const char *const pmic_models[] = {
 	[32] = "PM8150B",
 	[33] = "PMK8002",
 	[36] = "PM8009",
+	/* Lemansau Main Domain */
+	[78] = "PM8775",
+	/* Lemansau SAIL Domain */
+	[79] = "PM8775",
 };
 #endif /* CONFIG_DEBUG_FS */
 
@@ -214,6 +218,25 @@ static const char * const hw_platform_feature_code[] = {
 	[SOCINFO_FC_AF] = "AF",
 	[SOCINFO_FC_AG] = "AG",
 	[SOCINFO_FC_AH] = "AH",
+};
+
+static const char * const hw_platform_wfeature_code[] = {
+	[SOCINFO_FC_W0 - SOCINFO_FC_W0] = "W0",
+	[SOCINFO_FC_W1 - SOCINFO_FC_W0] = "W1",
+	[SOCINFO_FC_W2 - SOCINFO_FC_W0] = "W2",
+	[SOCINFO_FC_W3 - SOCINFO_FC_W0] = "W3",
+	[SOCINFO_FC_W4 - SOCINFO_FC_W0] = "W4",
+	[SOCINFO_FC_W5 - SOCINFO_FC_W0] = "W5",
+	[SOCINFO_FC_W6 - SOCINFO_FC_W0] = "W6",
+	[SOCINFO_FC_W7 - SOCINFO_FC_W0] = "W7",
+	[SOCINFO_FC_W8 - SOCINFO_FC_W0] = "W8",
+	[SOCINFO_FC_W9 - SOCINFO_FC_W0] = "W9",
+	[SOCINFO_FC_WA - SOCINFO_FC_W0] = "WA",
+	[SOCINFO_FC_WB - SOCINFO_FC_W0] = "WB",
+	[SOCINFO_FC_WC - SOCINFO_FC_W0] = "WC",
+	[SOCINFO_FC_WD - SOCINFO_FC_W0] = "WD",
+	[SOCINFO_FC_WE - SOCINFO_FC_W0] = "WE",
+	[SOCINFO_FC_WF - SOCINFO_FC_W0] = "WF",
 };
 
 static const char * const hw_platform_ifeature_code[] = {
@@ -371,10 +394,14 @@ struct smem_image_version {
 		int num_parts = 0; \
 		int str_pos = 0, i = 0, ret = 0; \
 		num_parts = socinfo_get_part_count(part_enum); \
+		if (num_parts <= 0) \
+			return -EINVAL;  \
 		part_info = kmalloc_array(num_parts, sizeof(*part_info), GFP_KERNEL); \
 		ret = socinfo_get_subpart_info(part_enum, part_info, num_parts); \
-		if (ret < 0) \
+		if (ret < 0) { \
+			kfree(part_info); \
 			return -EINVAL;  \
+		} \
 		for (i = 0; i < num_parts; i++) { \
 			str_pos += scnprintf(buf+str_pos, PAGE_SIZE-str_pos, "0x%x", \
 					part_info[i]); \
@@ -570,6 +597,8 @@ static const char *socinfo_get_feature_code_mapping(void)
 
 	if (id > SOCINFO_FC_UNKNOWN && id < SOCINFO_FC_EXT_RESERVE)
 		return hw_platform_feature_code[id];
+	else if (id >= SOCINFO_FC_W0 && id < SOCINFO_FC_SUBPART_RESERVE)
+		return hw_platform_wfeature_code[id - SOCINFO_FC_W0];
 	else if (id >= SOCINFO_FC_Y0 && id < SOCINFO_FC_INT_RESERVE)
 		return hw_platform_ifeature_code[id - SOCINFO_FC_Y0];
 
@@ -886,8 +915,9 @@ bool
 socinfo_get_part_info(enum subset_part_type part)
 {
 	uint32_t partinfo;
+	uint32_t num_parts = socinfo_get_num_subset_parts();
 
-	if (part >= NUM_PARTS_MAX) {
+	if ((part <= PART_UNKNOWN) || (part >= NUM_PARTS_MAX) || (part >= num_parts)) {
 		pr_err("Bad part number\n");
 		return false;
 	}
@@ -925,10 +955,11 @@ int
 socinfo_get_part_count(enum subset_part_type part)
 {
 	int part_count = 1;
+	uint32_t num_parts = socinfo_get_num_subset_parts();
 
 	/* TODO: part_count to be read from SMEM after firmware adds support */
 
-	if ((part <= PART_UNKNOWN) || (part >= NUM_PARTS_MAX)) {
+	if ((part <= PART_UNKNOWN) || (part >= NUM_PARTS_MAX) || (part >= num_parts)) {
 		pr_err("Bad part number\n");
 		return -EINVAL;
 	}
@@ -1201,6 +1232,7 @@ static const struct soc_id soc_id[] = {
 	{ 422, "IPQ6010" },
 	{ 425, "SC7180" },
 	{ 441, "QM_SCUBA" },
+	{ 445, "SM6115P" },
 	{ 453, "IPQ6005" },
 	{ 455, "QRB5165" },
 	{ 457, "WAIPIO" },
@@ -1249,6 +1281,13 @@ static const struct soc_id soc_id[] = {
 	{ 606, "MONACOAU_IVI"},
 	{ 607, "MONACOAU_SRV1L"},
 	{ 608, "CROW" },
+	{ 621, "QWM2290" },
+	{ 622, "QWS2290" },
+	{ 644, "CROW_LTE" },
+	{ 668, "QCS_KALAMAP_N"},
+	{ 687, "CROWP" },
+	{ 688, "QCM_KALAMA_N"},
+	{ 762, "KHAJEAPQ"},
 };
 
 static struct qcom_socinfo *qsocinfo;
@@ -2410,9 +2449,16 @@ static int qcom_socinfo_probe(struct platform_device *pdev)
 	qs->attr.revision = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%u.%u",
 					   SOCINFO_MAJOR(le32_to_cpu(info->ver)),
 					   SOCINFO_MINOR(le32_to_cpu(info->ver)));
-	qs->attr.soc_id = kasprintf(GFP_KERNEL, "%d", socinfo_get_id());
-	if (offsetof(struct socinfo, serial_num) <= item_size)
-		qs->attr.serial_number = kasprintf(GFP_KERNEL, "%u", socinfo_get_serial_number());
+	if (!qs->attr.soc_id || !qs->attr.revision)
+		return -ENOMEM;
+
+	if (offsetofend(struct socinfo, serial_num) <= item_size) {
+		qs->attr.serial_number = devm_kasprintf(&pdev->dev, GFP_KERNEL,
+							"%u",
+							le32_to_cpu(info->serial_num));
+		if (!qs->attr.serial_number)
+			return -ENOMEM;
+	}
 
 	if (socinfo_format >= SOCINFO_VERSION(0, 16)) {
 		socinfo_enumerate_partinfo_details();

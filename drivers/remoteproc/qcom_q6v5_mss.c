@@ -5,6 +5,7 @@
  * Copyright (C) 2016 Linaro Ltd.
  * Copyright (C) 2014 Sony Mobile Communications AB
  * Copyright (c) 2012-2013, 2020-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/clk.h>
@@ -810,7 +811,7 @@ static int q6v5_mpss_init_image(struct q6v5 *qproc, const struct firmware *fw)
 	void *ptr;
 	int ret;
 
-	metadata = qcom_mdt_read_metadata(qproc->dev, fw, qproc->hexagon_mdt_image, &size, NULL);
+	metadata = qcom_mdt_read_metadata(qproc->dev, fw, qproc->hexagon_mdt_image, &size, 0, NULL);
 	if (IS_ERR(metadata))
 		return PTR_ERR(metadata);
 
@@ -973,6 +974,9 @@ static int q6v5_mba_load(struct q6v5 *qproc)
 			"assigning Q6 access to mba memory failed: %d\n", ret);
 		goto disable_active_clks;
 	}
+
+	if (qproc->has_mba_logs)
+		qcom_pil_info_store("mba", qproc->mba_phys, MBA_LOG_SIZE);
 
 	writel(qproc->mba_phys, qproc->rmb_base + RMB_MBA_IMAGE_REG);
 	if (qproc->dp_size) {
@@ -1555,6 +1559,13 @@ static int q6v5_pds_attach(struct device *dev, struct device **devs,
 	while (pd_names[num_pds])
 		num_pds++;
 
+	/* Handle single power domain */
+	if (num_pds == 1 && dev->pm_domain) {
+		devs[0] = dev;
+		pm_runtime_enable(dev);
+		return 1;
+	}
+
 	for (i = 0; i < num_pds; i++) {
 		devs[i] = dev_pm_domain_attach_by_name(dev, pd_names[i]);
 		if (IS_ERR_OR_NULL(devs[i])) {
@@ -1575,7 +1586,14 @@ unroll_attach:
 static void q6v5_pds_detach(struct q6v5 *qproc, struct device **pds,
 			    size_t pd_count)
 {
+	struct device *dev = qproc->dev;
 	int i;
+
+	/* Handle single power domain */
+	if (pd_count == 1 && dev->pm_domain) {
+		pm_runtime_disable(dev);
+		return;
+	}
 
 	for (i = 0; i < pd_count; i++)
 		dev_pm_domain_detach(pds[i], false);
@@ -1925,6 +1943,42 @@ static const struct rproc_hexagon_res sdm845_mss = {
 	.version = MSS_SDM845,
 };
 
+static const struct rproc_hexagon_res qcs605_mss = {
+	.hexagon_mba_image = "mba.mbn",
+	.proxy_clk_names = (char*[]){
+			"xo",
+			"prng",
+			NULL
+	},
+	.reset_clk_names = (char*[]){
+			"iface",
+			"snoc_axi",
+			NULL
+	},
+	.active_clk_names = (char*[]){
+			"bus",
+			"mem",
+			"gpll0_mss",
+			"mnoc_axi",
+			NULL
+	},
+	.active_pd_names = (char*[]){
+			"load_state",
+			NULL
+	},
+	.proxy_pd_names = (char*[]){
+			"cx",
+			"mx",
+			"mss",
+			NULL
+	},
+	.need_mem_protection = true,
+	.has_alt_reset = true,
+	.has_mba_logs = false,
+	.has_spare_reg = false,
+	.version = MSS_SDM845,
+};
+
 static const struct rproc_hexagon_res msm8998_mss = {
 	.hexagon_mba_image = "mba.mbn",
 	.proxy_clk_names = (char*[]){
@@ -2022,9 +2076,16 @@ static const struct rproc_hexagon_res msm8974_mss = {
 	.hexagon_mba_image = "mba.b00",
 	.proxy_supply = (struct qcom_mss_reg_res[]) {
 		{
+			.supply = "pll",
+			.uA = 100000,
+		},
+		{
 			.supply = "mx",
 			.uV = 1050000,
 		},
+		{}
+	},
+	.fallback_proxy_supply = (struct qcom_mss_reg_res[]) {
 		{
 			.supply = "cx",
 			.uA = 100000,
@@ -2053,6 +2114,10 @@ static const struct rproc_hexagon_res msm8974_mss = {
 		"mem",
 		NULL
 	},
+	.proxy_pd_names = (char*[]){
+		"cx",
+		NULL
+	},
 	.need_mem_protection = false,
 	.has_alt_reset = false,
 	.has_mba_logs = false,
@@ -2061,13 +2126,14 @@ static const struct rproc_hexagon_res msm8974_mss = {
 };
 
 static const struct of_device_id q6v5_of_match[] = {
-	{ .compatible = "qcom,q6v5-pil", .data = &msm8916_mss},
+	{ .compatible = qcom,q6v5-pil", .data = &msm8916_mss},
 	{ .compatible = "qcom,msm8916-mss-pil", .data = &msm8916_mss},
 	{ .compatible = "qcom,msm8974-mss-pil", .data = &msm8974_mss},
 	{ .compatible = "qcom,msm8996-mss-pil", .data = &msm8996_mss},
 	{ .compatible = "qcom,msm8998-mss-pil", .data = &msm8998_mss},
 	{ .compatible = "qcom,sc7180-mss-pil", .data = &sc7180_mss},
 	{ .compatible = "qcom,sdm845-mss-pil", .data = &sdm845_mss},
+	{ .compatible = "qcom,qcs605-mss-pil", .data = &qcs605_mss},
 	{ },
 };
 MODULE_DEVICE_TABLE(of, q6v5_of_match);

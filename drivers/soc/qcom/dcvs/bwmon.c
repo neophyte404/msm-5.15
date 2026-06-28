@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "qcom-bwmon: " fmt
@@ -732,6 +732,7 @@ static bool bwmon_update_cur_freq(struct hwmon_node *node)
 {
 	struct bw_hwmon *hw = node->hw;
 	struct dcvs_freq new_freq;
+	u32 primary_mbps;
 
 	get_bw_and_set_irq(node, &new_freq);
 
@@ -740,6 +741,7 @@ static bool bwmon_update_cur_freq(struct hwmon_node *node)
 	new_freq.ib = MBPS_TO_KHZ(new_freq.ib, hw->dcvs_width);
 	new_freq.ib = max(new_freq.ib, node->min_freq);
 	new_freq.ib = min(new_freq.ib, node->max_freq);
+	primary_mbps = KHZ_TO_MBPS(new_freq.ib, hw->dcvs_width);
 
 	if (new_freq.ib != node->cur_freqs[0].ib ||
 			new_freq.ab != node->cur_freqs[0].ab) {
@@ -750,7 +752,7 @@ static bool bwmon_update_cur_freq(struct hwmon_node *node)
 				node->cur_freqs[1].ib = get_dst_from_map(hw,
 								new_freq.ib);
 			else if (hw->second_dcvs_width)
-				node->cur_freqs[1].ib = MBPS_TO_KHZ(new_freq.ib,
+				node->cur_freqs[1].ib = MBPS_TO_KHZ(primary_mbps,
 							hw->second_dcvs_width);
 			else
 				node->cur_freqs[1].ib = 0;
@@ -1711,6 +1713,7 @@ void __stop_bw_hwmon(struct bw_hwmon *hw, enum mon_reg_type type)
 
 	bwmon_monitor_stop(hw);
 	mon_irq_disable(m, type);
+	synchronize_irq(m->irq);
 	free_irq(m->irq, m);
 	mon_disable(m, type);
 	mon_clear(m, true, type);

@@ -824,8 +824,13 @@ static int lbs_cfg_scan(struct wiphy *wiphy,
 void lbs_send_disconnect_notification(struct lbs_private *priv,
 				      bool locally_generated)
 {
+#ifndef CFG80211_PROP_MULTI_LINK_SUPPORT
 	cfg80211_disconnected(priv->dev, 0, NULL, 0, locally_generated,
 			      GFP_KERNEL);
+#else /* CFG80211_PROP_MULTI_LINK_SUPPORT */
+	cfg80211_disconnected(priv->dev, 0, NULL, 0, locally_generated,
+			      NL80211_MLO_INVALID_LINK_ID, GFP_KERNEL);
+#endif /* CFG80211_PROP_MULTI_LINK_SUPPORT*/
 }
 
 void lbs_send_mic_failureevent(struct lbs_private *priv, u32 event)
@@ -1102,10 +1107,13 @@ static int lbs_associate(struct lbs_private *priv,
 	/* add SSID TLV */
 	rcu_read_lock();
 	ssid_eid = ieee80211_bss_get_ie(bss, WLAN_EID_SSID);
-	if (ssid_eid)
-		pos += lbs_add_ssid_tlv(pos, ssid_eid + 2, ssid_eid[1]);
-	else
+	if (ssid_eid) {
+		u32 ssid_len = min(ssid_eid[1], IEEE80211_MAX_SSID_LEN);
+
+		pos += lbs_add_ssid_tlv(pos, ssid_eid + 2, ssid_len);
+	} else {
 		lbs_deb_assoc("no SSID\n");
+	}
 	rcu_read_unlock();
 
 	/* add DS param TLV */
@@ -1413,10 +1421,17 @@ int lbs_disconnect(struct lbs_private *priv, u16 reason)
 	if (ret)
 		return ret;
 
+#ifndef CFG80211_PROP_MULTI_LINK_SUPPORT
 	cfg80211_disconnected(priv->dev,
-			reason,
-			NULL, 0, true,
-			GFP_KERNEL);
+			      reason,
+			      NULL, 0, true,
+			      GFP_KERNEL);
+#else /* CFG80211_PROP_MULTI_LINK_SUPPORT */
+	cfg80211_disconnected(priv->dev,
+			      reason,
+			      NULL, 0, true,
+			      NL80211_MLO_INVALID_LINK_ID, GFP_KERNEL);
+#endif /* CFG80211_PROP_MULTI_LINK_SUPPORT */
 	priv->connect_status = LBS_DISCONNECTED;
 
 	return 0;

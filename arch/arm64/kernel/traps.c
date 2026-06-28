@@ -486,6 +486,7 @@ void do_el1_undef(struct pt_regs *regs, unsigned long esr)
 		return;
 
 out_err:
+	trace_android_rvh_do_undefinstr(regs);
 	die("Oops - Undefined instruction", regs, esr);
 }
 
@@ -511,6 +512,7 @@ void do_el1_fpac(struct pt_regs *regs, unsigned long esr)
 	 * Unexpected FPAC exception in the kernel: kill the task before it
 	 * does any more harm.
 	 */
+	trace_android_rvh_do_ptrauth_fault(regs, esr);
 	die("Oops - FPAC", regs, esr);
 }
 
@@ -879,6 +881,7 @@ void panic_bad_stack(struct pt_regs *regs, unsigned int esr, unsigned long far)
 
 void __noreturn arm64_serror_panic(struct pt_regs *regs, u32 esr)
 {
+	add_taint(TAINT_MACHINE_CHECK, LOCKDEP_STILL_OK);
 	console_verbose();
 
 	pr_crit("SError Interrupt on CPU%d, code 0x%08x -- %s\n",

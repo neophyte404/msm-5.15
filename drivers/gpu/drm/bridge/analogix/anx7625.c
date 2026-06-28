@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright(c) 2020, Analogix Semiconductor. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 #include <linux/gcd.h>
@@ -1107,7 +1107,7 @@ static void anx7625_hpd_polling(struct anx7625_data *ctx)
 				 ctx, val,
 				 ((val & HPD_STATUS) || (val < 0)),
 				 5000,
-				 5000 * 100);
+				 5000 * 30);
 	if (ret) {
 		DRM_DEV_ERROR(dev, "no hpd.\n");
 		return;
@@ -1700,6 +1700,8 @@ static int __maybe_unused anx7625_runtime_pm_suspend(struct device *dev)
 	mutex_lock(&ctx->lock);
 
 	anx7625_stop_dp_work(ctx);
+	if (!ctx->pdata.panel_bridge)
+		anx7625_remove_edid(ctx);
 	anx7625_power_standby(ctx);
 
 	mutex_unlock(&ctx->lock);
@@ -1819,7 +1821,7 @@ static int anx7625_i2c_probe(struct i2c_client *client,
 		ret = devm_request_threaded_irq(dev, platform->pdata.intp_irq,
 						NULL, anx7625_intr_hpd_isr,
 						IRQF_TRIGGER_FALLING |
-						IRQF_ONESHOT,
+						IRQF_ONESHOT | IRQF_NO_AUTOEN,
 						"anx7625-intp", platform);
 		if (ret) {
 			DRM_DEV_ERROR(dev, "fail to request irq\n");
@@ -1841,8 +1843,10 @@ static int anx7625_i2c_probe(struct i2c_client *client,
 	}
 
 	/* Add work function */
-	if (platform->pdata.intp_irq)
+	if (platform->pdata.intp_irq) {
+		enable_irq(platform->pdata.intp_irq);
 		queue_work(platform->workqueue, &platform->work);
+	}
 
 	platform->bridge.funcs = &anx7625_bridge_funcs;
 	platform->bridge.of_node = client->dev.of_node;

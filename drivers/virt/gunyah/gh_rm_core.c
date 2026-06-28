@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  */
 
@@ -78,6 +79,8 @@ const static struct {
 	{GH_CPUSYS_VM, "cpusys_vm", "qcom,cpusysvm"},
 	{GH_OEM_VM, "oem_vm", "qcom,oemvm"},
 	{GH_AUTO_VM, "autoghgvm", "qcom,autoghgvm"},
+	{GH_ROBOTICS_VM1, "roboticsvm1", "qcom,roboticsvm1"},
+	{GH_ROBOTICS_VM2, "rdcapvm", "qcom,rdcapvm"},
 };
 
 static struct task_struct *gh_rm_drv_recv_task;

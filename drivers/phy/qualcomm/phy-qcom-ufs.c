@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2021, Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "phy-qcom-ufs-i.h"
@@ -156,18 +156,18 @@ struct phy *ufs_qcom_phy_generic_probe(struct platform_device *pdev,
 		goto out;
 	}
 
-	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
-	if (IS_ERR(phy_provider)) {
-		err = PTR_ERR(phy_provider);
-		dev_err(dev, "%s: failed to register phy %d\n", __func__, err);
-		goto out;
-	}
-
 	generic_phy = devm_phy_create(dev, NULL, ufs_qcom_phy_gen_ops);
 	if (IS_ERR(generic_phy)) {
 		err =  PTR_ERR(generic_phy);
 		dev_err(dev, "%s: failed to create phy %d\n", __func__, err);
 		generic_phy = NULL;
+		goto out;
+	}
+
+	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
+	if (IS_ERR(phy_provider)) {
+		err = PTR_ERR(phy_provider);
+		dev_err(dev, "%s: failed to register phy %d\n", __func__, err);
 		goto out;
 	}
 
@@ -684,14 +684,18 @@ void ufs_qcom_phy_set_tx_lane_enable(struct phy *generic_phy, u32 tx_lanes)
 }
 EXPORT_SYMBOL(ufs_qcom_phy_set_tx_lane_enable);
 
-void ufs_qcom_phy_save_controller_version(struct phy *generic_phy,
+int ufs_qcom_phy_save_controller_version(struct phy *generic_phy,
 					  u8 major, u16 minor, u16 step)
 {
 	struct ufs_qcom_phy *ufs_qcom_phy = get_ufs_qcom_phy(generic_phy);
 
+	if (!ufs_qcom_phy)
+		return -EPROBE_DEFER;
+
 	ufs_qcom_phy->host_ctrl_rev_major = major;
 	ufs_qcom_phy->host_ctrl_rev_minor = minor;
 	ufs_qcom_phy->host_ctrl_rev_step = step;
+	return 0;
 }
 EXPORT_SYMBOL(ufs_qcom_phy_save_controller_version);
 

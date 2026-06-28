@@ -258,14 +258,14 @@ struct mhi_ctxt {
 	dma_addr_t cmd_ctxt_addr;
 };
 
-struct mhi_tre {
+struct mhi_ring_element {
 	__le64 ptr;
 	__le32 dword[2];
 };
 
 struct bhi_vec_entry {
-	u64 dma_addr;
-	u64 size;
+	__le64 dma_addr;
+	__le64 size;
 };
 
 enum mhi_cmd_type {
@@ -591,6 +591,9 @@ struct mhi_chan {
 /* Default MHI timeout */
 #define MHI_TIMEOUT_MS (1000)
 
+/* Default RDDM timeout */
+#define RDDM_TIMEOUT_US (200000)
+#define RDDM_MAX_TIMEOUT_US (1000000)
 /* debugfs related functions */
 #ifdef CONFIG_MHI_BUS_DEBUG
 void mhi_create_debugfs(struct mhi_controller *mhi_cntrl);

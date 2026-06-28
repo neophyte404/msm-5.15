@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include "hgsl.h"
+#include "hgsl_trace.h"
 #include "hgsl_hyp.h"
 #include "hgsl_utils.h"
 #include <linux/delay.h>
@@ -112,6 +113,8 @@ static const char * const gsl_rpc_func_names[] = {
 	"RPC_COMMAND_RESETSTATUS",
 	"RPC_CONTEXT_QUERY_DBCQ",
 	"RPC_CONTEXT_REGISTER_DBCQ",
+	"RPC_GSLPROFILER_PER_PROC_GPU_BUSY",
+	"RPC_GSLPROFILER_PER_PROC_GPU_PMEM",
 	"RPC_FUNC_LAST" // insert new func BEFORE this line!
 };
 
@@ -295,51 +298,86 @@ static int rpc_handshake(struct hgsl_hyp_priv_t *priv,
 	struct hgsl_hab_channel_t *hab_channel)
 {
 	int ret = 0;
-	int rval = GSL_SUCCESS;
+	int rval = GSL_FAILURE;
 	struct gsl_hab_payload *send_buf = NULL;
 	struct gsl_hab_payload *recv_buf = NULL;
-	struct handshake_params_t params = { 0 };
+	union {
+		struct handshake_params_t v1;
+		struct handshake_params_v2_t v2;
+	} params;
+	size_t params_size;
+	int handshake_version;
 	int tmp = 0;
 	enum gsl_rpc_server_type_t server_type = GSL_RPC_SERVER_TYPE_LAST;
 	enum gsl_rpc_server_mode_t server_mode = GSL_RPC_SERVER_MODE_LAST;
 
 	RPC_TRACE();
 
-	ret = hgsl_rpc_parcel_reset(hab_channel);
-	if (ret) {
-		LOGE("hgsl_rpc_parcel_reset failed %d", ret);
-		goto out;
+	for (handshake_version = 2; handshake_version >= 1; handshake_version--) {
+		ret = hgsl_rpc_parcel_reset(hab_channel);
+		if (ret) {
+			LOGE("hgsl_rpc_parcel_reset failed %d", ret);
+			goto out;
+		}
+
+		send_buf = &hab_channel->send_buf;
+		recv_buf = &hab_channel->recv_buf;
+
+		switch (handshake_version) {
+		case 1:
+			params_size = sizeof(params.v1);
+			params.v1.client_type = g_client_type;
+			params.v1.client_version = g_client_version;
+			params.v1.pid = priv->client_pid;
+			params.v1.size = sizeof(params.v1);
+			strscpy(params.v1.name, priv->client_name, sizeof(params.v1.name));
+			LOGD("client process name is (%s), handshake version %d",
+				params.v1.name, handshake_version);
+			break;
+		case 2:
+			params_size = sizeof(params.v2);
+			params.v2.client_type = g_client_type;
+			params.v2.client_version = g_client_version;
+			params.v2.pid = priv->client_pid;
+			params.v2.size = sizeof(params.v2);
+			strscpy(params.v2.name, priv->client_name, sizeof(params.v2.name));
+			params.v2.uid = from_kuid(current_user_ns(), current_uid());
+			LOGD("client process name is (%s), uid %u, handshake version %d",
+				params.v2.name, params.v2.uid, handshake_version);
+			break;
+		default:
+			LOGE("Unknown handshake version %d", handshake_version);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		ret = gsl_rpc_write(send_buf, &params, params_size);
+		if (ret) {
+			LOGE("gsl_rpc_write failed %d", ret);
+			goto out;
+		}
+
+		ret = gsl_rpc_transact_ext(RPC_HANDSHAKE, handshake_version, hab_channel, 0);
+		if (ret) {
+			LOGE("gsl_rpc_transact_ext failed %d", ret);
+			goto out;
+		}
+
+		ret = gsl_rpc_read_int32_l(recv_buf, &rval);
+		if (ret) {
+			LOGE("gsl_rpc_read_int32_l failed %d", ret);
+			goto out;
+		}
+
+		if (rval != GSL_SUCCESS) {
+			LOGE("Handshake failed %d, BE sent error %d, try smaller version",
+					handshake_version, rval);
+		} else {
+			LOGD("Handshake success %d", handshake_version);
+			break;
+		}
 	}
-
-	send_buf = &hab_channel->send_buf;
-	recv_buf = &hab_channel->recv_buf;
-
-	params.client_type = g_client_type;
-	params.client_version = g_client_version;
-	params.pid = priv->client_pid;
-	params.size = sizeof(params);
-	/* send the current process name to the server */
-	strscpy(params.name, priv->client_name, sizeof(params.name));
-	LOGD("client process name is (%s)", params.name);
-
-	ret = gsl_rpc_write(send_buf, &params, sizeof(params));
-	if (ret) {
-		LOGE("gsl_rpc_write failed %d", ret);
-		goto out;
-	}
-
-	ret = gsl_rpc_transact_ext(RPC_HANDSHAKE, 1, hab_channel, 0);
-	if (ret) {
-		LOGE("gsl_rpc_transact_ext failed %d", ret);
-		goto out;
-	}
-
-	ret = gsl_rpc_read_int32_l(recv_buf, &rval);
-	if ((!ret) && (rval != GSL_SUCCESS)) {
-		LOGE("BE sent error %d", rval);
-		ret = -EINVAL;
-	}
-	if (!ret) {
+	if (ret == 0 && rval == GSL_SUCCESS) {
 		ret = gsl_rpc_read_int32_l(recv_buf, &priv->conn_id);
 		if (ret) {
 			LOGE("Failed to read conn_id %d", ret);
@@ -478,6 +516,7 @@ static int hgsl_rpc_create_channel(
 	struct hgsl_hab_channel_t *hab_channel
 		= (struct hgsl_hab_channel_t *)hgsl_zalloc(
 					sizeof(struct hgsl_hab_channel_t));
+	bool first_handshake = false;
 
 	if (hab_channel == NULL) {
 		LOGE("Failed to allocate hab_channel");
@@ -510,10 +549,13 @@ static int hgsl_rpc_create_channel(
 		}
 		hab_channel->socket = socket;
 		ret = rpc_handshake(priv, hab_channel);
-		if (ret)
-			LOGE("rpc_handshake failed %d", ret);
 		gsl_hab_close(socket);
 		hab_channel->socket = HAB_INVALID_HANDLE;
+		if (unlikely(ret)) {
+			LOGE("rpc_handshake failed %d", ret);
+			goto out;
+		}
+		first_handshake = true;
 	}
 
 	ret = hgsl_rpc_connect(priv, &socket);
@@ -523,18 +565,27 @@ static int hgsl_rpc_create_channel(
 	}
 	hab_channel->socket = socket;
 	ret = rpc_sub_handshake(priv, hab_channel);
-	if (ret) {
+	if (unlikely(ret)) {
 		LOGE("sub handshake failed %d", ret);
 		gsl_hab_close(socket);
 		hab_channel->socket = HAB_INVALID_HANDLE;
 	}
 
 out:
-	if (ret) {
+	if (unlikely(ret)) {
 		LOGE("Failed to create channel %d exiting", ret);
 		if (hab_channel != NULL) {
 			hgsl_hyp_close_channel(hab_channel);
 			hab_channel = NULL;
+		}
+		if (first_handshake) {
+			/* The sub handshake may failed due to the overhead
+			 * of hab transition between GVM and PVM, we shall
+			 * reset conn_id and overwrite errno to EAGAIN, let
+			 * userspace retry to create hab channel again.
+			 */
+			priv->conn_id = 0;
+			ret = -EAGAIN;
 		}
 	} else {
 		*channel = hab_channel;
@@ -1384,6 +1435,7 @@ int hgsl_hyp_issueib(struct hgsl_hyp_priv_t *priv,
 	}
 
 	LOGD("%d, %d, %d", hgsl_param->ctxthandle, hgsl_param->timestamp, ret);
+	trace_issue_cmd(hgsl_param->ctxthandle, hgsl_param->timestamp, ret, "hyp");
 
 out:
 	hgsl_hyp_channel_pool_put(hab_channel);
@@ -1508,6 +1560,7 @@ int hgsl_hyp_issueib_with_alloc_list(struct hgsl_hyp_priv_t *priv,
 	}
 
 	LOGD("%d, %d, %d", hgsl_param->ctxthandle, hgsl_param->timestamp, ret);
+	trace_issue_cmd(hgsl_param->ctxthandle, hgsl_param->timestamp, ret, "hyp");
 
 out:
 	hgsl_hyp_channel_pool_put(hab_channel);
@@ -2202,6 +2255,19 @@ int hgsl_hyp_get_dbq_info(struct hgsl_hyp_priv_t *priv, uint32_t dbq_idx,
 		LOGE("gsl_rpc_read_uint32_l failed, %d", ret);
 		goto out;
 	}
+	ret = gsl_rpc_read_uint64_l(recv_buf, &dbq_info->gmuaddr);
+	if (ret)
+		LOGW("gsl_rpc_read_uint64_l failed, %d", ret);
+	else {
+		ret = gsl_rpc_read_uint32_l(recv_buf,
+					&dbq_info->ibdesc_max_size);
+		if (ret)
+			LOGW("gsl_rpc_read_uint32_l failed, %d", ret);
+	}
+	if (ret) {
+		dbq_info->ibdesc_max_size = 0;
+		ret = 0;
+	}
 	dbq_info->size = (dbq_info->size + (0x1000 - 1)) & (~(0x1000 - 1));
 	ret = habmm_import(hab_channel->socket,
 		(void **)&dma_buf, dbq_info->size,
@@ -2539,6 +2605,7 @@ out:
 static int read_shadowts_mem_be(struct hgsl_hab_channel_t *hab_channel,
 				struct hgsl_context *ctxt)
 {
+	struct qcom_hgsl *hgsl = ctxt->priv->dev;
 	struct gsl_hab_payload *recv_buf = &hab_channel->recv_buf;
 	uint32_t export_id = 0;
 	struct hgsl_mem_node *mem_node = NULL;
@@ -2557,7 +2624,7 @@ static int read_shadowts_mem_be(struct hgsl_hab_channel_t *hab_channel,
 	}
 
 	if (rpc_shadow.flags & GSL_FLAGS_INITIALIZED) {
-		mem_node = hgsl_zalloc(sizeof(*mem_node));
+		mem_node = hgsl_mem_node_zalloc(hgsl->default_iocoherency);
 		if (mem_node == NULL) {
 			ret = -ENOMEM;
 			goto out;
@@ -2606,6 +2673,7 @@ int hgsl_hyp_ctxt_create_v1(struct device *dev,
 {
 	struct hgsl_mem_node *mem_node = NULL;
 	struct gsl_hab_payload *recv_buf = NULL;
+	struct qcom_hgsl *hgsl = priv->dev;
 	int ret = 0;
 	int rval = GSL_SUCCESS;
 
@@ -2625,7 +2693,7 @@ int hgsl_hyp_ctxt_create_v1(struct device *dev,
 	}
 	recv_buf = &hab_channel->recv_buf;
 
-	mem_node = hgsl_zalloc(sizeof(*mem_node));
+	mem_node = hgsl_mem_node_zalloc(hgsl->default_iocoherency);
 	if (mem_node == NULL) {
 		ret = -ENOMEM;
 		goto out;
@@ -2724,3 +2792,173 @@ out:
 	return ret;
 }
 
+int hgsl_hyp_gslprofiler_per_proc_gpu_busy(struct hgsl_hyp_priv_t *priv,
+	struct hgsl_ioctl_gslprofiler_per_proc_gpu_busy_params *hgsl_param,
+	struct gsl_profiler_get_per_proc_gpu_busy_percentage_t *busy)
+{
+	struct gslprofiler_per_proc_gpu_busy_params rpc_params = { 0 };
+	struct hgsl_hab_channel_t *hab_channel = NULL;
+	struct gsl_hab_payload *send_buf = NULL;
+	struct gsl_hab_payload *recv_buf = NULL;
+	int i = 0;
+	int ret = 0;
+	int rval = 0;
+	uint64_t double_tmp = 0; // Convert  uint_64_t to double
+
+	RPC_TRACE();
+	ret = hgsl_hyp_channel_pool_get(priv, hgsl_param->channel_id, &hab_channel);
+	if (ret) {
+		LOGE("Failed to get hab channel %d", ret);
+		goto out;
+	}
+
+	send_buf = &hab_channel->send_buf;
+	recv_buf = &hab_channel->recv_buf;
+
+	if (!hab_channel->wait_retry) {
+		hgsl_rpc_parcel_reset(hab_channel);
+		rpc_params.size              = sizeof(rpc_params);
+		rpc_params.sampling_time     = hgsl_param->sampling_time;
+
+		ret = gsl_rpc_write(send_buf, &rpc_params, sizeof(rpc_params));
+		if (ret) {
+			LOGE("gsl_rpc_write failed, %d", ret);
+			goto out;
+		}
+	}
+
+	ret = gsl_rpc_transact_interrruptible(RPC_GSLPROFILER_PER_PROC_GPU_BUSY, hab_channel);
+	if (ret == -EINTR) {
+		hgsl_param->channel_id = hab_channel->id;
+		return ret;
+	} else if (ret) {
+		LOGE("gsl_rpc_transact_interrruptible failed, %d", ret);
+		goto out;
+	}
+
+	ret = gsl_rpc_read_uint32_l(recv_buf, &busy->process_num);
+	if (ret) {
+		LOGE("gsl_rpc_read_uint32_l failed, %d", ret);
+		goto out;
+	}
+
+	for (i = 0; i < busy->process_num; i++) {
+		ret = gsl_rpc_read_uint32_l(recv_buf, &busy->process_id[i]);
+		if (ret) {
+			LOGE("gsl_rpc_read_uint32_l failed, %d", ret);
+			goto out;
+		}
+		ret = gsl_rpc_read(recv_buf, busy->process_name[i], sizeof(busy->process_name[i]));
+		if (ret) {
+			LOGE("gsl_rpc_read failed, %d", ret);
+			goto out;
+		}
+		ret = gsl_rpc_read_uint64_l(recv_buf, &double_tmp);
+		if (ret) {
+			LOGE("gsl_rpc_read_uint64_l failed, %d", ret);
+			goto out;
+		}
+		memcpy(&busy->busy_percentage[i], &double_tmp, sizeof(double));
+	}
+	ret = gsl_rpc_read_uint64_l(recv_buf, &busy->ts);
+	if (ret) {
+		LOGE("gsl_rpc_read_uint64_l failed, %d", ret);
+		goto out;
+	}
+	ret = gsl_rpc_read_int32_l(recv_buf, &rval);
+	if (ret) {
+		LOGE("gsl_rpc_read_int32_l failed, %d", ret);
+		goto out;
+	}
+
+	ret = rval;
+
+out:
+	hgsl_hyp_channel_pool_put(hab_channel);
+	RPC_TRACE_DONE();
+	return ret;
+}
+
+int hgsl_hyp_gslprofiler_per_proc_gpu_pmem(struct hgsl_hyp_priv_t *priv,
+	struct hgsl_ioctl_gslprofiler_per_proc_gpu_pmem_params *hgsl_param,
+	struct gsl_profiler_get_per_proc_gpu_pmem_usage_t *pmem)
+{
+	struct gslprofiler_per_proc_gpu_pmem_params rpc_params = { 0 };
+	struct hgsl_hab_channel_t *hab_channel = NULL;
+	struct gsl_hab_payload *send_buf = NULL;
+	struct gsl_hab_payload *recv_buf = NULL;
+	int i = 0;
+	int ret = 0;
+	int rval = 0;
+
+	RPC_TRACE();
+	ret = hgsl_hyp_channel_pool_get(priv, hgsl_param->channel_id, &hab_channel);
+	if (ret) {
+		LOGE("Failed to get hab channel %d", ret);
+		goto out;
+	}
+
+	send_buf = &hab_channel->send_buf;
+	recv_buf = &hab_channel->recv_buf;
+
+	if (!hab_channel->wait_retry) {
+		hgsl_rpc_parcel_reset(hab_channel);
+		rpc_params.size              = sizeof(rpc_params);
+		ret = gsl_rpc_write(send_buf, &rpc_params, sizeof(rpc_params));
+		if (ret) {
+			LOGE("gsl_rpc_write failed, %d", ret);
+			goto out;
+		}
+	}
+
+	ret = gsl_rpc_transact_interrruptible(RPC_GSLPROFILER_PER_PROC_GPU_PMEM, hab_channel);
+	if (ret == -EINTR) {
+		hgsl_param->channel_id = hab_channel->id;
+		return ret;
+	} else if (ret) {
+		LOGE("gsl_rpc_transact_interrruptible failed, %d", ret);
+		goto out;
+	}
+
+	ret = gsl_rpc_read_uint32_l(recv_buf, &pmem->process_num);
+	if (ret) {
+		LOGE("gsl_rpc_read_uint32_l failed, %d", ret);
+		goto out;
+	}
+
+	for (i = 0; i < pmem->process_num; i++) {
+		ret = gsl_rpc_read_uint32_l(recv_buf, &pmem->process_id[i]);
+		if (ret) {
+			LOGE("gsl_rpc_read_uint32_l failed, %d", ret);
+			goto out;
+		}
+		ret = gsl_rpc_read(recv_buf, pmem->process_name[i], sizeof(pmem->process_name[i]));
+		if (ret) {
+			LOGE("gsl_rpc_read failed, %d", ret);
+			goto out;
+		}
+		ret = gsl_rpc_read_uint32_l(recv_buf, &pmem->pmem_usage[i]);
+		if (ret) {
+			LOGE("gsl_rpc_read_uint64_l failed, %d", ret);
+			goto out;
+		}
+	}
+	ret = gsl_rpc_read_uint64_l(recv_buf, &pmem->ts);
+	if (ret) {
+		LOGE("gsl_rpc_read_uint64_l failed, %d", ret);
+		goto out;
+	}
+
+	ret = gsl_rpc_read_int32_l(recv_buf, &rval);
+	if (ret) {
+		LOGE("gsl_rpc_read_int32_l failed, %d", ret);
+		goto out;
+	}
+
+	ret = rval;
+
+out:
+	hgsl_hyp_channel_pool_put(hab_channel);
+	RPC_TRACE_DONE();
+	return ret;
+}

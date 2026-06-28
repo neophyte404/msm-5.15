@@ -311,8 +311,7 @@ static int clk_rpmh_bcm_send_cmd(struct clk_rpmh *c, bool enable)
 		cmd_state = 0;
 	}
 
-	if (cmd_state > BCM_TCS_CMD_VOTE_MASK)
-		cmd_state = BCM_TCS_CMD_VOTE_MASK;
+	cmd_state = min(cmd_state, BCM_TCS_CMD_VOTE_MASK);
 
 	if (c->last_sent_aggr_state != cmd_state) {
 		cmd.addr = c->res_addr;
@@ -373,7 +372,7 @@ static unsigned long clk_rpmh_bcm_recalc_rate(struct clk_hw *hw,
 {
 	struct clk_rpmh *c = to_clk_rpmh(hw);
 
-	return c->aggr_state * c->unit;
+	return (unsigned long)c->aggr_state * c->unit;
 }
 
 static const struct clk_ops clk_rpmh_bcm_ops = {
@@ -460,6 +459,25 @@ static struct clk_hw *sm8150_rpmh_clocks[] = {
 static const struct clk_rpmh_desc clk_rpmh_sm8150 = {
 	.clks = sm8150_rpmh_clocks,
 	.num_clks = ARRAY_SIZE(sm8150_rpmh_clocks),
+};
+
+static struct clk_hw *sdm670_rpmh_clocks[] = {
+	[RPMH_CXO_CLK]		= &sdm845_bi_tcxo.hw,
+	[RPMH_CXO_CLK_A]	= &sdm845_bi_tcxo_ao.hw,
+	[RPMH_LN_BB_CLK2]	= &sdm845_ln_bb_clk2.hw,
+	[RPMH_LN_BB_CLK2_A]	= &sdm845_ln_bb_clk2_ao.hw,
+	[RPMH_LN_BB_CLK3]	= &sdm845_ln_bb_clk3.hw,
+	[RPMH_LN_BB_CLK3_A]	= &sdm845_ln_bb_clk3_ao.hw,
+	[RPMH_RF_CLK1]		= &sdm845_rf_clk1.hw,
+	[RPMH_RF_CLK1_A]	= &sdm845_rf_clk1_ao.hw,
+	[RPMH_RF_CLK2]		= &sdm845_rf_clk2.hw,
+	[RPMH_RF_CLK2_A]	= &sdm845_rf_clk2_ao.hw,
+	[RPMH_IPA_CLK]		= &sdm845_ipa.hw,
+};
+
+static const struct clk_rpmh_desc clk_rpmh_sdm670 = {
+	.clks = sdm670_rpmh_clocks,
+	.num_clks = ARRAY_SIZE(sdm670_rpmh_clocks),
 };
 
 static struct clk_hw *sc7180_rpmh_clocks[] = {
@@ -870,6 +888,7 @@ static const struct of_device_id clk_rpmh_match_table[] = {
 	{ .compatible = "qcom,sdxbaagha-rpmh-clk", .data = &clk_rpmh_sdxbaagha},
 	{ .compatible = "qcom,lemans-rpmh-clk", .data = &clk_rpmh_lemans},
 	{ .compatible = "qcom,crow-rpmh-clk", .data = &clk_rpmh_crow},
+	{ .compatible = "qcom,sdm670-rpmh-clk", .data = &clk_rpmh_sdm670},
 	{ }
 };
 MODULE_DEVICE_TABLE(of, clk_rpmh_match_table);

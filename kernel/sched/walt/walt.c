@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/syscore_ops.h>
@@ -159,7 +159,7 @@ static inline u64 walt_rq_clock(struct rq *rq)
 	if (unlikely(walt_clock_suspended))
 		return sched_clock_last;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, NULL);
 
 	if (!(rq->clock_update_flags & RQCF_UPDATED))
 		update_rq_clock(rq);
@@ -206,7 +206,6 @@ void walt_task_dump(struct task_struct *p)
 	SCHED_PRINT(wts->demand);
 	SCHED_PRINT(wts->coloc_demand);
 	SCHED_PRINT(wts->enqueue_after_migration);
-	SCHED_PRINT(wts->last_sleep_ts);
 	SCHED_PRINT(wts->prev_cpu);
 	SCHED_PRINT(wts->new_cpu);
 	SCHED_PRINT(wts->misfit);
@@ -229,8 +228,10 @@ void walt_task_dump(struct task_struct *p)
 	printk_deferred("%s=%u (%s)\n", STRG(wts->prev_window),
 			wts->prev_window, buff);
 
+	SCHED_PRINT(wts->last_sleep_ts);
 	SCHED_PRINT(wts->last_wake_ts);
 	SCHED_PRINT(wts->last_enqueued_ts);
+	SCHED_PRINT(wts->mark_start_birth_ts);
 	SCHED_PRINT(wts->misfit);
 	SCHED_PRINT(wts->unfilter);
 	SCHED_PRINT(is_32bit_thread);
@@ -315,7 +316,7 @@ fixup_cumulative_runnable_avg(struct rq *rq,
 	s64 pred_demands_sum_scaled =
 		stats->pred_demands_sum_scaled + pred_demand_scaled_delta;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, p);
 
 	if (task_rq(p) != rq)
 		WALT_BUG(WALT_BUG_UPSTREAM, p, "on CPU %d task %s(%d) not on rq %d",
@@ -411,18 +412,20 @@ update_window_start(struct rq *rq, u64 wallclock, int event)
 	bool full_window;
 
 	if (wallclock < wrq->latest_clock) {
-		printk_deferred("WALT-BUG CPU%d; wallclock=%llu(0x%llx) is lesser than latest_clock=%llu(0x%llx) walt_clock_suspended=%d sched_clock_last=%llu(0x%llx)",
-				rq->cpu, wallclock, wallclock, wrq->latest_clock,
-				wrq->latest_clock, walt_clock_suspended,
-				sched_clock_last, sched_clock_last);
-		WALT_PANIC(1);
+		WALT_BUG(WALT_BUG_WALT, NULL,
+			"on CPU%d; wallclock=%llu(0x%llx) is lesser than latest_clock=%llu(0x%llx)",
+			rq->cpu, wallclock, wallclock, wrq->latest_clock,
+			wrq->latest_clock);
+		wallclock = wrq->latest_clock;
 	}
 	delta = wallclock - wrq->window_start;
 	if (delta < 0) {
-		printk_deferred("WALT-BUG CPU%d; wallclock=%llu(0x%llx) is lesser than window_start=%llu(0x%llx)",
-				rq->cpu, wallclock, wallclock,
-				wrq->window_start, wrq->window_start);
-		WALT_PANIC(1);
+		WALT_BUG(WALT_BUG_WALT, NULL,
+			" on CPU%d; wallclock=%llu(0x%llx) is lesser than window_start=%llu(0x%llx)",
+			rq->cpu, wallclock, wallclock,
+			wrq->window_start, wrq->window_start);
+		delta = 0;
+		wallclock = wrq->window_start;
 	}
 	wrq->latest_clock = wallclock;
 	if (delta < sched_ravg_window)
@@ -1037,7 +1040,7 @@ static void migrate_busy_time_subtraction(struct task_struct *p, int new_cpu)
 	if (pstate == TASK_WAKING)
 		raw_spin_rq_lock(src_rq);
 
-	lockdep_assert_held(&src_rq->__lock);
+	walt_lockdep_assert_rq(src_rq, p);
 
 	if (task_rq(p) != src_rq)
 		WALT_BUG(WALT_BUG_UPSTREAM, p, "on CPU %d task %s(%d) not on src_rq %d",
@@ -1119,6 +1122,8 @@ static void migrate_busy_time_addition(struct task_struct *p, int new_cpu, u64 w
 	int src_cpu = wts->prev_cpu;
 	struct rq *src_rq = cpu_rq(src_cpu);
 	struct walt_rq *src_wrq = (struct walt_rq *) src_rq->android_vendor_data1;
+
+	walt_lockdep_assert_rq(dest_rq, p);
 
 	walt_update_task_ravg(p, dest_rq, TASK_UPDATE, wallclock, 0);
 
@@ -1692,6 +1697,8 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 	int cpu = rq->cpu;
 	u32 old_curr_window = wts->curr_window;
 
+	walt_lockdep_assert_rq(rq, p);
+
 	new_window = mark_start < window_start;
 	if (new_window)
 		full_window = (window_start - mark_start) >= window_size;
@@ -2204,7 +2211,7 @@ update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, int event,
 	struct walt_rq *wrq = (struct walt_rq *) rq->android_vendor_data1;
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, p);
 
 	if (!use_cycle_counter) {
 		wrq->task_exec_scale = DIV64_U64_ROUNDUP(cpu_cur_freq(cpu) *
@@ -2245,10 +2252,11 @@ update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, int event,
 			time_delta = wallclock - wts->mark_start;
 
 		if ((s64)time_delta < 0) {
-			printk_deferred("WALT-BUG pid=%u CPU%d wallclock=%llu(0x%llx) < mark_start=%llu(0x%llx) event=%d irqtime=%llu",
-					 p->pid, rq->cpu, wallclock, wallclock,
-					 wts->mark_start, wts->mark_start, event, irqtime);
-			WALT_PANIC((s64)time_delta < 0);
+			WALT_BUG(WALT_BUG_WALT, p,
+				"WALT-BUG pid=%u CPU%d wallclock=%llu(0x%llx) < mark_start=%llu(0x%llx) event=%d irqtime=%llu",
+				 p->pid, rq->cpu, wallclock, wallclock,
+				 wts->mark_start, wts->mark_start, event, irqtime);
+			time_delta = 1;
 		}
 
 		wrq->task_exec_scale = DIV64_U64_ROUNDUP(cycles_delta *
@@ -2290,7 +2298,14 @@ static void walt_update_task_ravg(struct task_struct *p, struct rq *rq, int even
 	if (!wrq->window_start || wts->mark_start == wallclock)
 		return;
 
-	lockdep_assert_held(&rq->__lock);
+	if (unlikely(!raw_spin_is_locked(&rq->__lock)))
+		WALT_BUG(WALT_BUG_WALT, p,
+			"on CPU%d: %s task %s(%d) unlocked access for cpu=%d suspende=%d last_clk=%llu stack[%pS <== %pS <== %pS]\n",
+			raw_smp_processor_id(), __func__, p->comm, p->pid, rq->cpu,
+			walt_clock_suspended, sched_clock_last,
+			(void *)CALLER_ADDR0, (void *)CALLER_ADDR1, (void *)CALLER_ADDR2);
+
+	walt_lockdep_assert_rq(rq, p);
 
 	old_window_start = update_window_start(rq, wallclock, event);
 
@@ -2316,6 +2331,11 @@ static void walt_update_task_ravg(struct task_struct *p, struct rq *rq, int even
 
 done:
 	wts->mark_start = wallclock;
+	if (wts->mark_start > (wts->window_start + sched_ravg_window))
+		WALT_BUG(WALT_BUG_WALT, p,
+			"CPU%d: %s task %s(%d)'s ms=%llu is ahead of ws=%llu by more than 1 window on rq=%d event=%d",
+			raw_smp_processor_id(), __func__, p->comm, p->pid,
+			wts->mark_start, wts->window_start, rq->cpu, event);
 
 	run_walt_irq_work_rollover(old_window_start, rq);
 }
@@ -2392,6 +2412,7 @@ static void init_new_task_load(struct task_struct *p)
 	wts->total_exec = 0;
 	wts->mvp_prio = WALT_NOT_MVP;
 	wts->cidx = 0;
+	wts->mark_start_birth_ts = 0;
 	__sched_fork_init(p);
 	walt_flag_set(p, WALT_INIT, 1);
 }
@@ -2420,14 +2441,17 @@ static void walt_task_dead(struct task_struct *p)
 
 static void mark_task_starting(struct task_struct *p)
 {
-	u64 wallclock;
 	struct rq *rq = task_rq(p);
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	u64 wallclock = walt_rq_clock(rq);
 
-	wallclock = walt_rq_clock(rq);
-	wts->mark_start = wts->last_wake_ts = wallclock;
+	wts->last_wake_ts = wallclock;
 	wts->last_enqueued_ts = wallclock;
-	update_task_cpu_cycles(p, cpu_of(rq), wallclock);
+	wts->mark_start_birth_ts = wallclock;
+
+	if (wts->mark_start)
+		return;
+	walt_update_task_ravg(p, rq, TASK_UPDATE, wallclock, 0);
 }
 
 /*
@@ -3999,6 +4023,14 @@ static inline void __walt_irq_work_locked(bool is_migration, struct cpumask *loc
 			if (rq->curr) {
 				/* only update ravg for locked cpus */
 				if (cpumask_intersects(lock_cpus, &cluster->cpus)) {
+
+					if (unlikely(!raw_spin_is_locked(&rq->__lock)))
+						WALT_BUG(WALT_BUG_WALT, NULL,
+						"WALT-BUG %s unlocked cpu=%d is_migration=%d lock_cpus=%*pbl suspended=%d last_clk=%llu stack[%pS <= %pS <= %pS]\n",
+						__func__, rq->cpu, is_migration,
+						cpumask_pr_args(lock_cpus), walt_clock_suspended,
+						sched_clock_last, (void *)CALLER_ADDR0,
+						(void *)CALLER_ADDR1, (void *)CALLER_ADDR2);
 					walt_update_task_ravg(rq->curr, rq,
 							      TASK_UPDATE, wc, 0);
 					account_load_subtractions(rq);
@@ -4605,7 +4637,7 @@ static void android_rvh_enqueue_task(void *unused, struct rq *rq, struct task_st
 	if (unlikely(walt_disabled))
 		return;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, p);
 
 	if (!is_per_cpu_kthread(p))
 		wrq->enqueue_counter++;
@@ -4665,7 +4697,7 @@ static void android_rvh_dequeue_task(void *unused, struct rq *rq, struct task_st
 	if (unlikely(walt_disabled))
 		return;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, p);
 
 	/*
 	 * a task can be enqueued before walt is started, and dequeued after.
@@ -4780,7 +4812,7 @@ static void android_rvh_tick_entry(void *unused, struct rq *rq)
 	if (unlikely(walt_disabled))
 		return;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, NULL);
 	wallclock = walt_rq_clock(rq);
 
 	walt_update_task_ravg(rq->curr, rq, TASK_UPDATE, wallclock, 0);
@@ -4956,7 +4988,7 @@ static void walt_do_sched_yield(void *unused, struct rq *rq)
 	if (unlikely(walt_disabled))
 		return;
 
-	lockdep_assert_held(&rq->__lock);
+	walt_lockdep_assert_rq(rq, NULL);
 	if (!list_empty(&wts->mvp_list) && wts->mvp_list.next)
 		walt_cfs_deactivate_mvp_task(rq, curr);
 

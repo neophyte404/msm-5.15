@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
 #include <linux/fdtable.h>
@@ -11,8 +11,22 @@
 #define VFIO_DEV_DT_NAME "vfio_"
 
 enum hab_page_list_type {
+	/*
+	 * Use this type when dmabuf is created by habmm_import()
+	 */
 	HAB_PAGE_LIST_IMPORT = 0x1,
-	HAB_PAGE_LIST_EXPORT
+	/*
+	 * Use this type when dmabuf is created when hab_mem_export() is called
+	 * with the "kernel" parameter is TRUE and w/o HABMM_EXPIMP_FLAGS_DMABUF
+	 * and HABMM_EXPIMP_FLAGS_FD flag
+	 */
+	HAB_PAGE_LIST_EXPORT_KERNEL,
+	/*
+	 * Use this type when dmabuf is created when hab_mem_export() is called
+	 * with the "kernel" parameter is FALSE and w/o HABMM_EXP_MEM_TYPE_DMA
+	 * and HABMM_EXPIMP_FLAGS_FD flag
+	 */
+	HAB_PAGE_LIST_EXPORT_USER
 };
 
 struct pages_list {
@@ -135,6 +149,7 @@ static void pages_list_remove(struct pages_list *pglist)
 
 static void pages_list_destroy(struct kref *refcount)
 {
+	int i = 0;
 	struct pages_list *pglist = container_of(refcount,
 				struct pages_list, refcount);
 
@@ -146,6 +161,11 @@ static void pages_list_destroy(struct kref *refcount)
 	/* the imported pages used, notify the remote */
 	if (pglist->type == HAB_PAGE_LIST_IMPORT)
 		pages_list_remove(pglist);
+	else if (pglist->type == HAB_PAGE_LIST_EXPORT_USER) {
+		for (i = 0; i < pglist->npages; i++)
+			put_page(pglist->pages[i]);
+	}
+
 
 	vfree(pglist->pages);
 
@@ -237,7 +257,8 @@ static struct dma_buf *habmem_get_dma_buf_from_uva(unsigned long address,
 		int page_count)
 {
 	struct page **pages = NULL;
-	int i, ret = 0;
+	struct vm_area_struct *vma = NULL;
+	int i, ret, page_nr = 0;
 	struct dma_buf *dmabuf = NULL;
 	struct pages_list *pglist = NULL;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
@@ -256,20 +277,46 @@ static struct dma_buf *habmem_get_dma_buf_from_uva(unsigned long address,
 
 	mmap_read_lock(current->mm);
 
-	ret = get_user_pages(address, page_count, 0, pages, NULL);
+	/*
+	 * Need below sanity checks:
+	 * 1. input uva is covered by an existing VMA of the current process
+	 * 2. the given uva range is fully covered in the same VMA
+	 */
+	vma = vma_lookup(current->mm, address);
+	if (!range_in_vma(vma, address, address + page_count * PAGE_SIZE)) {
+		mmap_read_unlock(current->mm);
+		pr_err("input uva [0x%lx, 0x%lx) not covered in one VMA. UVA or size(%d) is invalid\n",
+			address, address + page_count * PAGE_SIZE, page_count * PAGE_SIZE);
+		ret = -EINVAL;
+		goto err;
+	}
+	page_nr = get_user_pages(address, page_count, 0, pages, NULL);
 
 	mmap_read_unlock(current->mm);
 
-	if (ret <= 0) {
+	if (page_nr  <= 0) {
 		ret = -EINVAL;
 		pr_err("get %d user pages failed %d\n",
-			page_count, ret);
+			page_count, page_nr);
+		goto err;
+	}
+
+	/*
+	 * The actual number of the pinned pages is returned by get_user_pages.
+	 * It may not match with the requested number.
+	 */
+	if (page_nr != page_count) {
+		ret = -EINVAL;
+		pr_err("input page cnt %d not match with pinned %d\n", page_count, page_nr);
+		for (i = 0; i < page_nr; i++)
+			put_page(pages[i]);
+
 		goto err;
 	}
 
 	pglist->pages = pages;
 	pglist->npages = page_count;
-	pglist->type = HAB_PAGE_LIST_EXPORT;
+	pglist->type = HAB_PAGE_LIST_EXPORT_USER;
 
 	kref_init(&pglist->refcount);
 
@@ -286,6 +333,7 @@ static struct dma_buf *habmem_get_dma_buf_from_uva(unsigned long address,
 		ret = PTR_ERR(dmabuf);
 		goto err;
 	}
+
 	return dmabuf;
 
 err:
@@ -319,7 +367,13 @@ static int habmem_compress_pfns(
 	if (IS_ERR_OR_NULL(dmabuf) || !pfns || !data_size)
 		return -EINVAL;
 
-	pr_debug("page_count %d\n", page_count);
+	pr_debug("dmabuf size: %u, page_count: %d\n", dmabuf->size, page_count);
+
+	if (dmabuf->size < (page_count * PAGE_SIZE)) {
+		pr_err("given dmabuf size %u less than expected, page cnt %d\n",
+			dmabuf->size, page_count);
+		return -EINVAL;
+	}
 
 	/* DMA buffer from fd */
 	if (dmabuf->ops != &dma_buf_ops) {
@@ -575,7 +629,7 @@ int habmem_hyp_grant(struct virtual_channel *vchan,
 
 		pglist->pages = pages;
 		pglist->npages = page_count;
-		pglist->type = HAB_PAGE_LIST_EXPORT;
+		pglist->type = HAB_PAGE_LIST_EXPORT_KERNEL;
 		pglist->pchan = vchan->pchan;
 		pglist->vcid = vchan->id;
 
@@ -961,10 +1015,21 @@ int habmem_imp_hyp_map(void *imp_ctx, struct hab_import *param,
 
 int habmm_imp_hyp_unmap(void *imp_ctx, struct export_desc *exp, int kernel)
 {
+	int ret = 0;
+	struct dma_buf *buf;
+
 	/* dma_buf is the only supported format in khab */
-	if (kernel)
-		dma_buf_put((struct dma_buf *)exp->kva);
-	return 0;
+	if (kernel) {
+		buf = (struct dma_buf *)exp->kva;
+		if (file_count(buf->file) > 1) {
+			ret = -EBUSY;
+			pr_err("exp id %d still in use on %s, refcnt %d\n",
+				exp->export_id, exp->pchan->name, file_count(buf->file));
+		} else
+			dma_buf_put((struct dma_buf *)exp->kva);
+	}
+
+	return ret;
 }
 
 int habmem_imp_hyp_mmap(struct file *filp, struct vm_area_struct *vma)

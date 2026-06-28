@@ -496,6 +496,20 @@ static struct llcc_slice_config lemans_data[] =  {
 	{LLCC_WRTCH,    31, 512, 1, 1, 0x00FF, 0x0, 0, 0, 0, 0, 1, 0, 0},
 };
 
+static struct llcc_slice_config qcs605_data[] =  {
+	{LLCC_CPUSS,     1, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 1},
+	{LLCC_VIDSC0,    2, 256, 2, 1, 0x3, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_VIDSC1,    3, 256, 2, 1, 0x3, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_VOICE,     5, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_AUDIO,     6, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_MDM,       8, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_CMPT,      10, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_GPU,       12, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 1, 0},
+	{LLCC_MMUHWT,    13, 512, 1, 0, 0xF, 0x0, 0, 0, 1, 0, 1},
+	{LLCC_AUDHW,     22, 512, 1, 1, 0xF, 0x0, 0, 0, 1, 1, 0},
+};
+
+
 static const struct qcom_llcc_config diwali_cfg = {
 	.sct_data       = diwali_data,
 	.size           = ARRAY_SIZE(diwali_data),
@@ -573,6 +587,11 @@ static const struct qcom_llcc_config cinder_cfg[] = {
 static const struct qcom_llcc_config lemans_cfg = {
 	.sct_data       = lemans_data,
 	.size           = ARRAY_SIZE(lemans_data),
+};
+
+static const struct qcom_llcc_config qcs605_cfg = {
+	.sct_data       = qcs605_data,
+	.size           = ARRAY_SIZE(qcs605_data),
 };
 
 static struct llcc_drv_data *drv_data = (void *) -EPROBE_DEFER;
@@ -922,79 +941,6 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 	u32 attr1_val;
 	u32 attr0_val;
 	u32 max_cap_cacheline;
-	struct llcc_slice_desc desc;
-
-	attr1_val = config->cache_mode;
-	attr1_val |= config->probe_target_ways << ATTR1_PROBE_TARGET_WAYS_SHIFT;
-	attr1_val |= config->fixed_size << ATTR1_FIXED_SIZE_SHIFT;
-	attr1_val |= config->priority << ATTR1_PRIORITY_SHIFT;
-
-	max_cap_cacheline = MAX_CAP_TO_BYTES(config->max_cap);
-
-	/*
-	 * LLCC instances can vary for each target.
-	 * The SW writes to broadcast register which gets propagated
-	 * to each llcc instance (llcc0,.. llccN).
-	 * Since the size of the memory is divided equally amongst the
-	 * llcc instances, we need to configure the max cap accordingly.
-	 */
-	max_cap_cacheline = max_cap_cacheline / drv_data->num_banks;
-	max_cap_cacheline >>= CACHE_LINE_SIZE_SHIFT;
-	attr1_val |= max_cap_cacheline << ATTR1_MAX_CAP_SHIFT;
-
-	attr1_cfg = LLCC_TRP_ATTR1_CFGn(config->slice_id);
-
-	ret = regmap_write(drv_data->bcast_regmap, attr1_cfg, attr1_val);
-	if (ret)
-		return ret;
-
-	attr0_val = config->res_ways & ATTR0_RES_WAYS_MASK;
-	attr0_val |= config->bonus_ways << ATTR0_BONUS_WAYS_SHIFT;
-
-	attr0_cfg = LLCC_TRP_ATTR0_CFGn(config->slice_id);
-
-	ret = regmap_write(drv_data->bcast_regmap, attr0_cfg, attr0_val);
-	if (ret)
-		return ret;
-
-	if (cfg->need_llcc_cfg) {
-		u32 disable_cap_alloc, retain_pc;
-
-		disable_cap_alloc = config->dis_cap_alloc << config->slice_id;
-		ret = regmap_update_bits(drv_data->bcast_regmap, LLCC_TRP_SCID_DIS_CAP_ALLOC,
-					 BIT(config->slice_id), disable_cap_alloc);
-		if (ret)
-			return ret;
-
-		retain_pc = config->retain_on_pc << config->slice_id;
-		ret = regmap_update_bits(drv_data->bcast_regmap, LLCC_TRP_PCB_ACT,
-					 BIT(config->slice_id), retain_pc);
-		if (ret)
-			return ret;
-	}
-
-	if (drv_data->major_version == 2) {
-		u32 wren;
-
-		wren = config->write_scid_en << config->slice_id;
-		ret = regmap_update_bits(drv_data->bcast_regmap, LLCC_TRP_WRSC_EN,
-					 BIT(config->slice_id), wren);
-		if (ret)
-			return ret;
-	}
-
-	if (config->activate_on_init) {
-		desc.slice_id = config->slice_id;
-		ret = llcc_slice_activate(&desc);
-	}
-
-	return ret;
-}
-
-static int qcom_llcc_cfg_program(struct platform_device *pdev,
-				 const struct qcom_llcc_config *cfg)
-{
-	int i;
 	u32 sz;
 	u32 pcb = 0;
 	u32 cad = 0;
@@ -1388,6 +1334,7 @@ static const struct of_device_id qcom_llcc_of_match[] = {
 	{ .compatible = "qcom,cinder-llcc", .data = &cinder_cfg },
 	{ .compatible = "qcom,lemans-llcc", .data = &lemans_cfg },
 	{ .compatible = "qcom,crow-llcc", .data = &crow_cfg },
+	{ .compatible = "qcom,qcs605-llcc", .data = &qcs605_cfg },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, qcom_llcc_of_match);

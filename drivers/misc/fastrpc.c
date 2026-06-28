@@ -828,7 +828,7 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 			mmap_read_lock(current->mm);
 			vma = find_vma(current->mm, ctx->args[i].ptr);
 			if (vma)
-				pages[i].addr += ctx->args[i].ptr -
+				pages[i].addr += (ctx->args[i].ptr & PAGE_MASK) -
 						 vma->vm_start;
 			mmap_read_unlock(current->mm);
 
@@ -836,6 +836,22 @@ static int fastrpc_get_args(u32 kernel, struct fastrpc_invoke_ctx *ctx)
 			pg_end = ((ctx->args[i].ptr + len - 1) & PAGE_MASK) >>
 				  PAGE_SHIFT;
 			pages[i].size = (pg_end - pg_start + 1) * PAGE_SIZE;
+			/*
+			 * Check for page range overflow and validate page
+			 * range is not greater than map buffer range.
+			 * This prevents potential buffer overflow
+			 * and memory corruption that could be exploited.
+			 */
+			if (pages[i].addr > (ULLONG_MAX - pages[i].size) ||
+			   (pages[i].addr + pages[i].size) >
+					(ctx->maps[i]->phys + ctx->maps[i]->size)) {
+				err = -EFAULT;
+				dev_err(dev,
+					"Invalid buffer addr 0x%llx len 0x%llx IPA 0x%llx size 0x%llx fd %d\n",
+					ctx->args[i].ptr, len, ctx->maps[i]->phys,
+					ctx->maps[i]->size, ctx->maps[i]->fd);
+				goto bail;
+			}
 
 		} else {
 
@@ -1594,7 +1610,7 @@ static int fastrpc_cb_remove(struct platform_device *pdev)
 	int i;
 
 	spin_lock_irqsave(&cctx->lock, flags);
-	for (i = 1; i < FASTRPC_MAX_SESSIONS; i++) {
+	for (i = 0; i < FASTRPC_MAX_SESSIONS; i++) {
 		if (cctx->session[i].sid == sess->sid) {
 			cctx->session[i].valid = false;
 			cctx->sesscount--;

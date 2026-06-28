@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/clk-provider.h>
@@ -43,6 +43,8 @@ static struct alpha_pll_config video_pll0_config = {
 	.config_ctl_val = 0x20485699,
 	.config_ctl_hi_val = 0x00002267,
 	.config_ctl_hi1_val = 0x00000024,
+	.test_ctl_val = 0x00000000,
+	.test_ctl_hi_val = 0x00000000,
 	.test_ctl_hi1_val = 0x00000020,
 	.user_ctl_val = 0x00000000,
 	.user_ctl_hi_val = 0x00000805,
@@ -255,10 +257,6 @@ static const struct qcom_reset_map video_cc_sm8150_resets[] = {
 	[VIDEO_CC_MVS1_BCR] = { 0x8b0 },
 	[VIDEO_CC_MVSC_BCR] = { 0x810 },
 	[VIDEO_CC_MVSC_CORE_CLK_BCR] = { 0x850, 2 },
-	[VIDEO_CC_INTERFACE_BCR] = { 0x8f0 },
-	[VIDEO_CC_MVS0_BCR] = { 0x870 },
-	[VIDEO_CC_MVS1_BCR] = { 0x8b0 },
-	[VIDEO_CC_MVSC_BCR] = { 0x810 },
 };
 
 static struct qcom_cc_desc video_cc_sm8150_desc = {
@@ -297,6 +295,9 @@ static int video_cc_sm8150_probe(struct platform_device *pdev)
 
 	/* Keep VIDEO_CC_XO_CLK ALWAYS-ON */
 	regmap_update_bits(regmap, 0x984, 0x1, 0x1);
+
+	video_cc_sm8150_desc.gdscs = NULL;
+	video_cc_sm8150_desc.num_gdscs = 0;
 
 	ret = qcom_cc_really_probe(pdev, &video_cc_sm8150_desc, regmap);
 	if (ret) {

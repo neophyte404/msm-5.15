@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/bitops.h>
@@ -21,6 +21,7 @@
 #include <linux/thermal.h>
 #include <linux/thermal_minidump.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/adc/qcom-vadc-common.h>
 
@@ -438,16 +439,18 @@ static int adc5_gen3_poll_wait_hs(struct adc5_chip *adc,
 	return 0;
 }
 
-#define ADC5_GEN3_CONV_TIMEOUT_MS	501
+#define ADC5_GEN3_CONV_TIMEOUT_MS	50
+#define ADC5_GEN3_POLL_ATTEMPTS		10
 
 static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 			struct adc5_channel_prop *prop,
 			u16 *data_volt)
 {
-	int ret;
+	int ret, i;
+	bool poll_eoc = false;
 	unsigned long rc;
 	unsigned int time_pending_ms;
-	u8 val, sdam_index = prop->sdam_index;
+	u8 val, eoc_status, sdam_index = prop->sdam_index;
 
 	/* Reserve channel 0 of first SDAM for immediate conversions */
 	if (prop->adc_tm)
@@ -464,10 +467,29 @@ static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 		goto unlock;
 	}
 
-	/* No support for polling mode at present*/
-	rc = wait_for_completion_timeout(&adc->complete,
-					msecs_to_jiffies(ADC5_GEN3_CONV_TIMEOUT_MS));
-	if (!rc) {
+	for (i = 0; i < ADC5_GEN3_POLL_ATTEMPTS; i++) {
+		/* Trying both polling and waiting for interrupt */
+		rc = wait_for_completion_timeout(&adc->complete,
+						msecs_to_jiffies(ADC5_GEN3_CONV_TIMEOUT_MS));
+		if (rc) {
+			pr_debug("Got EOC interrupt after %d polling attempts\n", i);
+			break;
+		}
+
+		/* CHAN0 is the preconfigured channel for immediate conversion */
+		ret = adc5_read(adc, 0, ADC5_GEN3_EOC_STS, &eoc_status, 1);
+		if (ret < 0) {
+			pr_err("adc read eoc status failed with %d\n", ret);
+			goto unlock;
+		}
+
+		if (eoc_status & ADC5_GEN3_EOC_CHAN_0) {
+			poll_eoc = true;
+			break;
+		}
+	}
+
+	if (!rc && !poll_eoc) {
 		pr_err("Reading ADC channel %s timed out\n",
 			prop->datasheet_name);
 		ret = -ETIMEDOUT;
@@ -476,7 +498,7 @@ static int adc5_gen3_do_conversion(struct adc5_chip *adc,
 
 	time_pending_ms = jiffies_to_msecs(rc);
 	pr_debug("ADC channel %s EOC took %u ms\n", prop->datasheet_name,
-		ADC5_GEN3_CONV_TIMEOUT_MS - time_pending_ms);
+		(i + 1) * ADC5_GEN3_CONV_TIMEOUT_MS - time_pending_ms);
 
 	ret = adc5_gen3_read_voltage_data(adc, data_volt, sdam_index);
 	if (ret < 0)
@@ -715,8 +737,12 @@ static void tm_handler_work(struct work_struct *work)
 				continue;
 			}
 			pr_debug("notifying thermal, temp:%d\n", temp);
+
+			mutex_lock(&adc->lock);
 			chan_prop->last_temp = temp;
 			chan_prop->last_temp_set = true;
+			mutex_unlock(&adc->lock);
+
 			thermal_zone_device_update(chan_prop->tzd, THERMAL_TRIP_VIOLATED);
 		}
 	}
@@ -792,7 +818,7 @@ static const struct iio_info adc5_gen3_info = {
 /* Used by thermal clients to read ADC channel temperature */
 int adc_tm_gen3_get_temp(void *data, int *temp)
 {
-	int ret;
+	int ret = 0;
 	struct adc5_channel_prop *prop = data;
 	struct adc5_chip *adc;
 	u16 adc_code_volt;
@@ -804,18 +830,21 @@ int adc_tm_gen3_get_temp(void *data, int *temp)
 
 	if (prop->last_temp_set) {
 		pr_debug("last_temp: %d\n", prop->last_temp);
+		mutex_lock(&adc->lock);
 		prop->last_temp_set = false;
 		*temp = prop->last_temp;
-		return 0;
+		mutex_unlock(&adc->lock);
+	} else {
+		ret = adc5_gen3_do_conversion(adc, prop, &adc_code_volt);
+		if (ret < 0)
+			return ret;
+
+		ret = qcom_adc5_hw_scale(prop->scale_fn_type,
+			prop->prescale, adc->data,
+			adc_code_volt, temp);
+		if (ret < 0)
+			return ret;
 	}
-
-	ret = adc5_gen3_do_conversion(adc, prop, &adc_code_volt);
-	if (ret < 0)
-		return ret;
-
-	ret = qcom_adc5_hw_scale(prop->scale_fn_type,
-		prop->prescale, adc->data,
-		adc_code_volt, temp);
 
 	/* Save temperature data to minidump */
 	if (prop->chip->adc_md != NULL && prop->tzd)
@@ -1772,12 +1801,16 @@ static int adc5_gen3_exit(struct platform_device *pdev)
 	u8 data = 0;
 	int i, sdam_index;
 
-	mutex_lock(&adc->lock);
+	if (adc->n_tm_channels)
+		cancel_work_sync(&adc->tm_handler_work);
+
 	for (i = 0; i < adc->nchannels; i++) {
 		if (adc->chan_props[i].req_wq)
 			destroy_workqueue(adc->chan_props[i].req_wq);
 		adc->chan_props[i].timer = MEAS_INT_DISABLE;
 	}
+
+	mutex_lock(&adc->lock);
 
 	/* Disable all available channels */
 	for (i = 0; i < adc->num_sdams * 8; i++) {
@@ -1794,9 +1827,6 @@ static int adc5_gen3_exit(struct platform_device *pdev)
 	}
 
 	mutex_unlock(&adc->lock);
-
-	if (adc->n_tm_channels)
-		cancel_work_sync(&adc->tm_handler_work);
 
 	mutex_destroy(&adc->lock);
 
@@ -1862,9 +1892,27 @@ static void adc5_gen3_shutdown(struct platform_device *pdev)
 	}
 }
 
+static int adc5_gen3_suspend(struct device *dev)
+{
+	if (pm_suspend_via_firmware())
+		return adc5_gen3_freeze(dev);
+
+	return 0;
+}
+
+static int adc5_gen3_resume(struct device *dev)
+{
+	if (pm_suspend_via_firmware())
+		return adc5_gen3_restore(dev);
+
+	return 0;
+}
+
 static const struct dev_pm_ops adc5_gen3_pm_ops = {
 	.freeze = adc5_gen3_freeze,
 	.restore = adc5_gen3_restore,
+	.suspend = adc5_gen3_suspend,
+	.resume = adc5_gen3_resume,
 };
 
 static struct platform_driver adc5_gen3_driver = {

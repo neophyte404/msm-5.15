@@ -694,8 +694,10 @@ tls_device_rx_resync_async(struct tls_offload_resync_async *resync_async,
 		/* shouldn't get to wraparound:
 		 * too long in async stage, something bad happened
 		 */
-		if (WARN_ON_ONCE(resync_async->rcd_delta == USHRT_MAX))
+		if (WARN_ON_ONCE(resync_async->rcd_delta == USHRT_MAX)) {
+			tls_offload_rx_resync_async_request_cancel(resync_async);
 			return false;
+		}
 
 		/* asynchronous stage: log all headers seq such that
 		 * req_seq <= seq <= end_seq, and wait for real resync request
@@ -950,11 +952,9 @@ int tls_device_decrypted(struct sock *sk, struct tls_context *tls_ctx,
 				   tls_ctx->rx.rec_seq, rxm->full_len,
 				   is_encrypted, is_decrypted);
 
-	ctx->sw.decrypted |= is_decrypted;
-
 	if (unlikely(test_bit(TLS_RX_DEV_DEGRADED, &tls_ctx->flags))) {
 		if (likely(is_encrypted || is_decrypted))
-			return 0;
+			return is_decrypted;
 
 		/* After tls_device_down disables the offload, the next SKB will
 		 * likely have initial fragments decrypted, and final ones not
@@ -969,7 +969,7 @@ int tls_device_decrypted(struct sock *sk, struct tls_context *tls_ctx,
 	 */
 	if (is_decrypted) {
 		ctx->resync_nh_reset = 1;
-		return 0;
+		return is_decrypted;
 	}
 	if (is_encrypted) {
 		tls_device_core_ctrl_rx_resync(tls_ctx, ctx, sk, skb);
