@@ -638,7 +638,7 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 			!blk_mq_is_sbitmap_shared(q->tag_set->flags))
 		return NULL;
 
-	return elevator_get(q, "ssg", false);
+	return elevator_get(q, "mq-deadline", false);
 }
 
 /*
@@ -685,15 +685,7 @@ void elevator_init_mq(struct request_queue *q)
 	if (unlikely(q->elevator))
 		return;
 
-	if (IS_ENABLED(CONFIG_BFQ_DEFAULT)) {
-		e = elevator_get(q, "bfq", false);
-	} else if (IS_ENABLED(CONFIG_MQ_KYBER_DEFAULT)) {
-		e = elevator_get(q, "kyber", false);
-	} else if (IS_ENABLED(CONFIG_MQ_KYBER_DEFAULT)) {
-		e = elevator_get(q, "kyber", false);
-	} else if (IS_ENABLED(CONFIG_MQ_SSG_DEFAULT)) {
-		e = elevator_get(q, "ssg", false);
-	} else if (!q->required_elevator_features)
+	if (!q->required_elevator_features)
 		e = elevator_get_default(q);
 	else
 		e = elevator_get_by_features(q);
@@ -779,31 +771,10 @@ static int __elevator_change(struct request_queue *q, const char *name)
 	return elevator_switch(q, e);
 }
 
-static inline bool task_is_booster(struct task_struct *tsk)
-{
-	char comm[sizeof(tsk->comm)];
-
-	get_task_comm(comm, tsk);
-	return !strcmp(comm, "init") || !strcmp(comm, "NodeLooperThrea") ||
-	       !strcmp(comm, "power@1.2-servi") ||
-	       !strcmp(comm, "power@1.3-servi") ||
-	       !strcmp(comm, "perf@1.0-servic") ||
-	       !strcmp(comm, "perf@2.0-servic") ||
-	       !strcmp(comm, "perf@2.1-servic") ||
-	       !strcmp(comm, "perf@2.2-servic") ||
-	       !strcmp(comm, "power@2.0-servic") ||
-	       !strcmp(comm, "iop@") ||
-	       !strcmp(comm, "PERFD-SERVER") ||
-	       !strcmp(comm, "init.qcom.post_");
-}
-
 ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 			  size_t count)
 {
 	int ret;
-
-	if (task_is_booster(current))
-		return count;
 
 	if (!elv_support_iosched(q))
 		return count;
